@@ -24,6 +24,7 @@ import com.google.android.gms.maps.model.PolygonOptions;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -42,25 +43,25 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     private Geocoder geocoder;
 
     // Provincias -> capital
-    private Map<String, String> provinciaCapital = new HashMap<>();
+    private final Map<String, String> provinciaCapital = new HashMap<>();
 
     // Capital -> fallback LatLng (por si Geocoder falla)
-    private Map<String, LatLng> capitalFallback = new HashMap<>();
+    private final Map<String, LatLng> capitalFallback = new HashMap<>();
 
-    // Provincias ya agregadas (evita duplicados)
-    private Set<String> agregadas = new HashSet<>();
+    // Provincias ya agregadas (evita duplicados lógicos)
+    private final Set<String> agregadas = new HashSet<>();
 
-    // Puntos seleccionados (ordenaremos al generar el polígono)
+    // Puntos seleccionados (para polígono)
     private final List<LatLng> puntosSeleccionados = new ArrayList<>();
 
-    // Para poder eliminar el polígono anterior
+    // Polígono actual (para poder removerlo)
     @Nullable
     private Polygon poligonoActual = null;
 
-    // Para poder eliminar marcadores si hace falta
+    // Provincia -> Marker (para limpiar)
     private final Map<String, Marker> marcadorPorProvincia = new HashMap<>();
 
-    // Lista de provincias (15)
+    // Todas las provincias (15)
     private static final String[] PROVINCIAS_SCZ = new String[]{
             "Andrés Ibáñez",
             "Warnes",
@@ -79,6 +80,11 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             "Manuel María Caballero"
     };
 
+    // Lista mutable para el Spinner (se irán removiendo aquí)
+    private final List<String> provinciasDisponibles = new ArrayList<>();
+
+    private ArrayAdapter<String> spinnerAdapter;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -93,27 +99,21 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         btnGenerar = findViewById(R.id.btnGenerarPoligono);
         btnLimpiar = findViewById(R.id.btnLimpiar);
 
-        // Adapter del Spinner
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(
-                this,
-                android.R.layout.simple_spinner_item,
-                PROVINCIAS_SCZ
-        );
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spProvincias.setAdapter(adapter);
+        // Inicializar lista y adapter del Spinner
+        repoblarSpinner();
 
         // Cargar mapa
         SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
                 .findFragmentById(R.id.map);
         if (mapFragment != null) mapFragment.getMapAsync(this);
 
-        // Agregar marcador de la provincia seleccionada
+        // Agregar marcador de la provincia seleccionada y remover opción del Spinner
         btnAgregar.setOnClickListener(v -> agregarProvinciaSeleccionada());
 
         // Generar polígono con los puntos seleccionados
         btnGenerar.setOnClickListener(v -> generarPoligono());
 
-        // Limpiar todo
+        // Limpiar todo y restaurar opciones
         btnLimpiar.setOnClickListener(v -> limpiarTodo());
     }
 
@@ -127,17 +127,30 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     }
 
     private void agregarProvinciaSeleccionada() {
+        if (provinciasDisponibles.isEmpty()) {
+            Toast.makeText(this, "No hay más provincias disponibles.", Toast.LENGTH_SHORT).show();
+            btnAgregar.setEnabled(false);
+            return;
+        }
+
         String provincia = (String) spProvincias.getSelectedItem();
-        if (provincia == null) return;
+        if (provincia == null) {
+            Toast.makeText(this, "Selecciona una provincia.", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         if (agregadas.contains(provincia)) {
             Toast.makeText(this, "Ya agregaste " + provincia, Toast.LENGTH_SHORT).show();
+            // Aun así, remover del spinner si quedó (consistencia visual)
+            removerProvinciaDeSpinner(provincia);
             return;
         }
 
         String capital = provinciaCapital.get(provincia);
         if (capital == null) {
             Toast.makeText(this, "No se encontró capital para " + provincia, Toast.LENGTH_SHORT).show();
+            // Remover del spinner para evitar loops
+            removerProvinciaDeSpinner(provincia);
             return;
         }
 
@@ -149,6 +162,8 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
         if (punto == null) {
             Toast.makeText(this, "No se pudo localizar " + capital, Toast.LENGTH_SHORT).show();
+            // Remover del spinner para evitar volver a intentar una y otra vez
+            removerProvinciaDeSpinner(provincia);
             return;
         }
 
@@ -165,6 +180,9 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
         // Enfocar levemente
         myMap.animateCamera(CameraUpdateFactory.newLatLngZoom(punto, 8.5f));
+
+        // Remover la provincia del Spinner y actualizar selección
+        removerProvinciaDeSpinner(provincia);
     }
 
     private void generarPoligono() {
@@ -190,8 +208,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
         poligonoActual = myMap.addPolygon(polygonOptions);
 
-        // Encajar cámara a los puntos
-        // (Zoom manual sencillo para no extender demasiado el ejemplo)
+        // Zoom sugerido general
         myMap.animateCamera(CameraUpdateFactory.zoomTo(6.8f));
     }
 
@@ -212,10 +229,49 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         puntosSeleccionados.clear();
         agregadas.clear();
 
-        Toast.makeText(this, "Limpieza completada.", Toast.LENGTH_SHORT).show();
+        // Restaurar opciones del Spinner
+        repoblarSpinner();
+
+        Toast.makeText(this, "Limpieza completada. Provincias restauradas.", Toast.LENGTH_SHORT).show();
     }
 
     // -------- Utilidades --------
+
+    private void repoblarSpinner() {
+        provinciasDisponibles.clear();
+        provinciasDisponibles.addAll(Arrays.asList(PROVINCIAS_SCZ));
+
+        if (spinnerAdapter == null) {
+            spinnerAdapter = new ArrayAdapter<>(
+                    this,
+                    android.R.layout.simple_spinner_item,
+                    provinciasDisponibles
+            );
+            spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            spProvincias.setAdapter(spinnerAdapter);
+        } else {
+            spinnerAdapter.notifyDataSetChanged();
+        }
+
+        spProvincias.setSelection(0);
+        btnAgregar.setEnabled(true);
+    }
+
+    private void removerProvinciaDeSpinner(String provincia) {
+        int idx = provinciasDisponibles.indexOf(provincia);
+        if (idx >= 0) {
+            provinciasDisponibles.remove(idx);
+            spinnerAdapter.notifyDataSetChanged();
+
+            if (provinciasDisponibles.isEmpty()) {
+                btnAgregar.setEnabled(false);
+                Toast.makeText(this, "Se agregaron todas las provincias disponibles.", Toast.LENGTH_SHORT).show();
+            } else {
+                // Ajustar selección a la primera opción disponible
+                spProvincias.setSelection(0);
+            }
+        }
+    }
 
     private LatLng geocodificarCapital(String consulta) {
         try {
